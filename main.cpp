@@ -1,22 +1,23 @@
-// Order Book: table of buy orders (aka bid) and sell orders (aka ask).
-// Bid: price a buyer is willing to pay for a quantity of product, so the best 
-//  one has the greatest price.
-// Ask: price a seller is willing to accept for a quantity of product, so the 
-//  best one has the lowest price.
-// Spread: best_ask - best_bid, so its value can be:
-//  >0,  it tells the liquidity/inefficiency cost of enter/exit the market;
-//  ==0, perfect tight spread when the market is perfectly balanced;
-//  <0,  (aka crossed book) it can't really exists except for time needed by the 
-//   matching engine to execute the transaction.
-// The Spread is one of the indexes that says if a market is liquid, i.e. if 
-//  there is a lot of concurrency and it's fast to buy/sell. But the spread is 
-//  not the only index, another one is the Depth: large quantities for each 
-//  price means high depth and so liquid market.
-// In terms of liquidity, an order can be a:
-// - liquidity provider, if it doesn't cross the book so it stays in the book 
-//  adding the available volume of a product increasing the liquidity; 
-// - liquidity taker, if it's marktable i.e. it crosses the book so it triggers 
-//  a match and consumes liquidity.
+// Order Book: table of buy orders (bids) and sell orders (asks).
+// Bid: price a buyer is willing to pay for a quantity of product; the best bid 
+//  is the highest price.
+// Ask: price a seller is willing to accept for a quantity of product; the best 
+//  ask is the lowest price.
+// Spread: best_ask - best_bid. Its value can be:
+//  > 0: represents the implicit liquidity/inefficiency cost of entering or 
+//       exiting the market;
+//  == 0: perfectly tight spread, when the market is balanced;
+//  < 0: (crossed book) cannot really exist, except for a brief moment before 
+//       the matching engine executes the trade.
+// The spread is one indicator of liquidity: a tight spread means low cost of 
+//  trading and high competition. But spread alone is not enough. Another key 
+//  factor is Depth: large quantities available at each price level mean high 
+//  depth, and therefore a more liquid market.
+// In terms of liquidity, an order can be:
+// - liquidity provider: if it does not cross the book, it stays in the book and 
+//   adds available volume, increasing liquidity;
+// - liquidity taker: if it is marketable, i.e. it crosses the book, it triggers 
+//   a match and consumes liquidity.
 
 #include <iostream>
 #include <sstream>
