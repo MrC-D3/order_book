@@ -1,10 +1,30 @@
-// Order Book.
+// Order Book: table of buy orders (aka bid) and sell orders (aka ask).
+// Bid: price a buyer is willing to pay for a quantity of product, so the best 
+//  one has the greatest price.
+// Ask: price a seller is willing to accept for a quantity of product, so the 
+//  best one has the lowest price.
+// Spread: best_ask - best_bid, so its value can be:
+//  >0,  it tells the liquidity/inefficiency cost of enter/exit the market;
+//  ==0, perfect tight spread when the market is perfectly balanced;
+//  <0,  (aka crossed book) it can't really exists except for time needed by the 
+//   matching engine to execute the transaction.
+// The Spread is one of the indexes that says if a market is liquid, i.e. if 
+//  there is a lot of concurrency and it's fast to buy/sell. But the spread is 
+//  not the only index, another one is the Depth: large quantities for each 
+//  price means high depth and so liquid market.
+// In terms of liquidity, an order can be a:
+// - liquidity provider, if it doesn't cross the book so it stays in the book 
+//  adding the available volume of a product increasing the liquidity; 
+// - liquidity taker, if it's marktable i.e. it crosses the book so it triggers 
+//  a match and consumes liquidity.
 
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
 #include <string>
 #include <list>
+#include <queue>
+#include <map>
 
 
 struct Order
@@ -36,10 +56,38 @@ class OrderBook
     std::string del(std::string& parameters);
     std::string modify(std::string& parameters);
     std::string get(std::string& parameters);
+    std::string aggregated_best(std::string& parameters);
 
   private:
     std::unordered_map<std::string, Order> orders;
+    std::unordered_map<std::string, std::map<uint32_t, uint32_t>> to_buy;
+    std::unordered_map<std::string, std::map<uint32_t, uint32_t>> to_sell;
+
+    void increase_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
+    void decrease_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
 };
+
+void OrderBook::increase_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+{
+    // What if keys don't exist?
+    auto& prices = to_update[order.productID];
+    prices[order.price] += order.quantity;
+}
+void OrderBook::decrease_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+{
+    // What if keys don't exist?
+    auto& prices = to_update[order.productID];
+    prices[order.price] -= order.quantity;
+
+    // Gestione delle quantità zero: Le funzioni decrease_quantity possono 
+    //  portare a quantità negative o zero, ma il codice non rimuove le entry 
+    //  con quantità zero dalle mappe, causando accumulo di dati non validi.
+
+}
 
 std::string OrderBook::create(std::string& parameters)
 {
@@ -68,6 +116,16 @@ std::string OrderBook::create(std::string& parameters)
 
     orders[orderID] = new_order;
     std::cout << "  Created: " << new_order.to_string() << "\n";
+
+    // Increase to_buy OR to_sell.
+    if (new_order.verb == Order::Verb::BUY)
+    {
+        increase_quantity(new_order, to_buy);
+    }
+    else
+    {
+        increase_quantity(new_order, to_sell);
+    }
     
     return "OK";
 }
@@ -79,10 +137,23 @@ std::string OrderBook::del(std::string& parameters)
     std::string orderID;
     std::getline(ss, orderID);
     
-    if (orders.erase(orderID) == 0)
+    auto it = orders.find(orderID);
+    if (it == orders.end())
     {
         return "ERROR";
     }
+
+    // Decrease to_buy OR to_sell.
+    if (it->second.verb == Order::Verb::BUY)
+    {
+        decrease_quantity(it->second, to_buy);
+    }
+    else
+    {
+        decrease_quantity(it->second, to_sell);
+    }
+
+    orders.erase(it);
 
     std::cout << "  Deleted: " << orderID << "\n";
     return "OK";
@@ -103,18 +174,40 @@ std::string OrderBook::modify(std::string& parameters)
     auto quantity = stoul(quantity_s);
 
     auto& order = orders[orderID];
+
+    // Decrease to_buy OR to_sell.
+    if (order.verb == Order::Verb::BUY)
+    {
+        decrease_quantity(order, to_buy);
+    }
+    else
+    {
+        decrease_quantity(order, to_sell);
+    }
+
+    // Finally update order.
     order.price = price;
     order.quantity = quantity;
 
+    // Increase to_buy OR to_sell.
+    if (order.verb == Order::Verb::BUY)
+    {
+        increase_quantity(order, to_buy);
+    }
+    else
+    {
+        increase_quantity(order, to_sell);
+    }
+
     std::cout << "  Modified: " << order.to_string() << "\n";
     return "OK";
-}    
+}
 
 std::string OrderBook::get(std::string& parameters)
 {
     std::stringstream ss{parameters};
     std::string orderID;
-    std::getline(ss, orderID, ' ');
+    std::getline(ss, orderID);
     if (orders.find(orderID) == orders.end())
     {
         return "ERROR";
@@ -124,12 +217,53 @@ std::string OrderBook::get(std::string& parameters)
     return "OK " + order.to_string();
 }
 
+std::string OrderBook::aggregated_best(std::string& parameters)
+{
+    std::stringstream ss{parameters};
+    std::string productID;
+    std::getline(ss, productID);
+
+    auto it_buy = to_buy.find(productID);
+    auto it_sell = to_sell.find(productID);
+    if (it_buy == to_buy.end() && it_sell == to_sell.end())
+    {
+        return "ERROR";
+    }
+    std::string to_return{"OK:"};
+
+    // To buy.
+    if (it_buy == to_buy.end())
+    {
+        to_return += "0@0|";
+    }
+    else
+    {
+        auto it_price = it_buy->second.begin();
+        to_return += std::to_string(it_price->second) + "@" + 
+          std::to_string(it_price->first) + "|";
+    }
+
+    // To sell.
+    if (it_sell == to_sell.end())
+    {
+        to_return += "0@0";
+    }
+    else
+    {
+        auto it_price = it_sell->second.rbegin();
+        to_return += std::to_string(it_price->second) + "@" + 
+          std::to_string(it_price->first);
+    }
+
+    return to_return;
+}
+
 
 int main()
 {
     OrderBook order_book;
-    std::unordered_map<std::string, std::list<Order&>> to_buy;
-    std::unordered_map<std::string, std::list<Order&>> to_sell;
+
+    // Mancanza di validazione input.
 
     while (true)
     {
@@ -182,7 +316,11 @@ int main()
         else if (command == "AGGREGATED_BEST")
         {
             // AGGREGATED_BEST ProductId
-            
+            std::cout << "  Command: " << command << "\n";
+            std::cout << "  Parameters: " << parameters << "\n";
+
+            auto result = order_book.aggregated_best(parameters);
+            std::cout << "  Result of AGGREGATED_BEST: " << result << "\n";
         }
         else if (command == "QUIT")
         {
