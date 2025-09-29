@@ -53,11 +53,12 @@ struct Order
 class OrderBook
 {
   public:
-    std::string create(std::string& parameters);
-    std::string del(std::string& parameters);
-    std::string modify(std::string& parameters);
-    std::string get(std::string& parameters);
-    std::string aggregated_best(std::string& parameters);
+    bool create(std::string& orderID, std::string& productID, 
+      Order::Verb verb, uint32_t price, uint32_t quantity);
+    bool del(std::string& orderID);
+    bool modify(std::string& orderID, uint32_t price, uint32_t quantity);
+    const Order& get(std::string& orderID);
+    bool aggregated_best(std::string& productID);
 
   private:
     std::unordered_map<std::string, Order> orders;
@@ -70,50 +71,20 @@ class OrderBook
       std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
 };
 
-void OrderBook::increase_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+bool OrderBook::create(std::string& orderID, std::string& productID, 
+  Order::Verb verb, uint32_t price, uint32_t quantity)
 {
-    // What if keys don't exist?
-    auto& prices = to_update[order.productID];
-    prices[order.price] += order.quantity;
-}
-void OrderBook::decrease_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
-{
-    // What if keys don't exist?
-    auto& prices = to_update[order.productID];
-    prices[order.price] -= order.quantity;
-
-    // Gestione delle quantità zero: Le funzioni decrease_quantity possono 
-    //  portare a quantità negative o zero, ma il codice non rimuove le entry 
-    //  con quantità zero dalle mappe, causando accumulo di dati non validi.
-
-}
-
-std::string OrderBook::create(std::string& parameters)
-{
-    // CREATE OrderId ProductId Verb Price Quantity
-    //  E.g.: CREATE 1 1 BUY 1 1
-    std::stringstream ss{parameters};
-    std::string orderID, productID, verb_s, price_s, quantity_s;
-    std::getline(ss, orderID, ' ');
     if (orders.find(orderID) != orders.end())
     {
-        return "ERROR";
+        return false;
     }
-    std::getline(ss, productID, ' ');
-    std::getline(ss, verb_s, ' ');
-    std::getline(ss, price_s, ' ');
-    std::getline(ss, quantity_s);
-    std::cout << "  Spliced: " << orderID << " " << productID << " " << verb_s 
-      << " " << price_s << " " << quantity_s << "\n";
 
     Order new_order;
     new_order.orderID = orderID;
     new_order.productID = productID;
-    new_order.verb = verb_s == "BUY" ? Order::Verb::BUY : Order::Verb::SELL;
-    new_order.price = stoul(price_s);
-    new_order.quantity = stoul(quantity_s);
+    new_order.verb = verb;
+    new_order.price = price;
+    new_order.quantity = quantity;
 
     orders[orderID] = new_order;
     std::cout << "  Created: " << new_order.to_string() << "\n";
@@ -128,20 +99,14 @@ std::string OrderBook::create(std::string& parameters)
         increase_quantity(new_order, to_sell);
     }
     
-    return "OK";
+    return true;
 }
-
-std::string OrderBook::del(std::string& parameters)
+bool OrderBook::del(std::string& orderID)
 {
-    std::stringstream ss{parameters};
-    // No need to call clear() since it's a new stream.
-    std::string orderID;
-    std::getline(ss, orderID);
-    
     auto it = orders.find(orderID);
     if (it == orders.end())
     {
-        return "ERROR";
+        return false;
     }
 
     // Decrease to_buy OR to_sell.
@@ -157,22 +122,14 @@ std::string OrderBook::del(std::string& parameters)
     orders.erase(it);
 
     std::cout << "  Deleted: " << orderID << "\n";
-    return "OK";
+    return true;
 }
-
-std::string OrderBook::modify(std::string& parameters)
+bool OrderBook::modify(std::string& orderID, uint32_t price, uint32_t quantity)
 {
-    std::stringstream ss{parameters};
-    std::string orderID, price_s, quantity_s;
-    std::getline(ss, orderID, ' ');
     if (orders.find(orderID) == orders.end())
     {
         return "ERROR";
     }
-    std::getline(ss, price_s, ' ');
-    std::getline(ss, quantity_s);
-    auto price = stoul(price_s);
-    auto quantity = stoul(quantity_s);
 
     auto& order = orders[orderID];
 
@@ -201,29 +158,20 @@ std::string OrderBook::modify(std::string& parameters)
     }
 
     std::cout << "  Modified: " << order.to_string() << "\n";
-    return "OK";
+    return true;
 }
-
-std::string OrderBook::get(std::string& parameters)
+const Order& OrderBook::get(std::string& orderID)
 {
-    std::stringstream ss{parameters};
-    std::string orderID;
-    std::getline(ss, orderID);
-    if (orders.find(orderID) == orders.end())
+    auto it = orders.find(orderID);
+    if (it == orders.end())
     {
-        return "ERROR";
+        throw std::out_of_range{"orderID doesn't exist!"};
     }
 
-    auto& order = orders[orderID];
-    return "OK " + order.to_string();
+    return it->second;
 }
 
-std::string OrderBook::aggregated_best(std::string& parameters)
 {
-    std::stringstream ss{parameters};
-    std::string productID;
-    std::getline(ss, productID);
-
     auto it_buy = to_buy.find(productID);
     auto it_sell = to_sell.find(productID);
     if (it_buy == to_buy.end() && it_sell == to_sell.end())
@@ -260,9 +208,108 @@ std::string OrderBook::aggregated_best(std::string& parameters)
 }
 
 
+class OrderBookParser
+{
+  public:
+    std::string create(std::string& parameters);
+    std::string del(std::string& parameters);
+    std::string modify(std::string& parameters);
+    std::string get(std::string& parameters);
+    std::string aggregated_best(std::string& parameters);
+
+  private:
+    OrderBook& order_book;
+};
+
+void OrderBook::increase_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+{
+    // What if keys don't exist?
+    auto& prices = to_update[order.productID];
+    prices[order.price] += order.quantity;
+}
+void OrderBookParser::decrease_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+{
+    // What if keys don't exist?
+    auto& prices = to_update[order.productID];
+    prices[order.price] -= order.quantity;
+
+    // Gestione delle quantità zero: Le funzioni decrease_quantity possono 
+    //  portare a quantità negative o zero, ma il codice non rimuove le entry 
+    //  con quantità zero dalle mappe, causando accumulo di dati non validi.
+
+}
+
+std::string OrderBookParser::create(std::string& parameters)
+{
+    // CREATE OrderId ProductId Verb Price Quantity
+    //  E.g.: CREATE 1 1 BUY 1 1
+    std::stringstream ss{parameters};
+    std::string orderID, productID, verb_s, price_s, quantity_s;
+    std::getline(ss, orderID, ' ');
+    std::getline(ss, productID, ' ');
+    std::getline(ss, verb_s, ' ');
+    std::getline(ss, price_s, ' ');
+    std::getline(ss, quantity_s);
+
+    auto verb = verb_s == "BUY" ? Order::Verb::BUY : Order::Verb::SELL;
+    return order_book.create(orderID, productID, verb, std::stoul(price_s), 
+      std::stoul(quantity_s)) ? "OK" : "ERROR";
+}
+std::string OrderBookParser::del(std::string& parameters)
+{
+    std::stringstream ss{parameters};
+    // No need to call clear() since it's a new stream.
+    std::string orderID;
+    std::getline(ss, orderID);
+
+    return order_book.del(orderID) ? "OK" : "ERROR";
+}
+std::string OrderBookParser::modify(std::string& parameters)
+{
+    std::stringstream ss{parameters};
+    std::string orderID, price_s, quantity_s;
+    std::getline(ss, orderID, ' ');
+    std::getline(ss, price_s, ' ');
+    std::getline(ss, quantity_s);
+
+    return order_book.modify(orderID, stoul(price_s), stoul(quantity_s)) ?
+      "OK" : "ERROR";
+}
+
+std::string OrderBookParser::get(std::string& parameters)
+{
+    std::stringstream ss{parameters};
+    std::string orderID;
+    std::getline(ss, orderID);
+
+    try
+    {
+        auto order = order_book.get(orderID);
+        return "OK:" + order.to_string();
+    }
+    catch(...)
+    {
+
+    }
+
+    return "ERROR";
+}
+
+std::string OrderBookParser::aggregated_best(std::string& parameters)
+{
+    std::stringstream ss{parameters};
+    std::string productID;
+    std::getline(ss, productID);
+
+
+}
+
+
 int main()
 {
-    OrderBook order_book;
+    OrderBookParser order_book;
 
     // Mancanza di validazione input.
 
