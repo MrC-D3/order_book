@@ -19,228 +19,19 @@
 // - liquidity taker: if it is marketable, i.e. it crosses the book, it triggers 
 //   a match and consumes liquidity.
 
+// TODO:
+// - Validazione input;
+// - Storico dei comandi;
+// - Case insensitive.
+// - authentication/authorization
+
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
 #include <string>
-#include <list>
-#include <queue>
 #include <map>
 
-
-struct Order
-{
-    enum class Verb
-    {
-        BUY,
-        SELL
-    };
-
-    std::string orderID;
-    std::string productID;
-    Verb verb;
-    uint32_t price;
-    uint32_t quantity;
-
-    std::string to_string()
-    {
-        std::string verb_s = (verb == Verb::BUY) ? "BUY" : "SELL";
-        return orderID + " " + productID + " " + verb_s + " " + 
-          std::to_string(price) + " " + std::to_string(quantity);
-    }
-};
-
-class OrderBook
-{
-  public:
-    bool create(std::string& orderID, std::string& productID, 
-      Order::Verb verb, uint32_t price, uint32_t quantity);
-    bool del(std::string& orderID);
-    bool modify(std::string& orderID, uint32_t price, uint32_t quantity);
-    const Order& get(std::string& orderID);
-    bool aggregated_best(std::string& productID, uint32_t& bid_quantity, 
-      uint32_t& bid_price, uint32_t& ask_quantity, uint32_t& ask_price);
-
-  private:
-    std::unordered_map<std::string, Order> orders;
-    // Maps productID => {price, tot_quantity}.
-    std::unordered_map<std::string, std::map<uint32_t, uint32_t>> to_buy;
-    std::unordered_map<std::string, std::map<uint32_t, uint32_t>> to_sell;
-
-    void increase_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
-    void decrease_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
-};
-
-void OrderBook::increase_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
-{
-    // What if keys don't exist?
-    auto& prices = to_update[order.productID];
-    prices[order.price] += order.quantity;
-}
-void OrderBook::decrease_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
-{
-    auto it_product = to_update.find(order.productID);
-    if (it_product == to_update.end())
-    {
-        throw std::out_of_range{"ProductID doesn't exist."};
-    }
-
-    auto& prices = it_product->second;
-    auto it_price = prices.find(order.price);
-    if (it_price == prices.end())
-    {
-        throw std::out_of_range{"Price doesn't exist."};
-    }
-
-    auto& quantity = it_price->second;
-    quantity -= order.quantity;
-    if (quantity == 0)
-    {
-        prices.erase(it_price);
-    }
-}
-
-bool OrderBook::create(std::string& orderID, std::string& productID, 
-  Order::Verb verb, uint32_t price, uint32_t quantity)
-{
-    if (orders.find(orderID) != orders.end())
-    {
-        return false;
-    }
-
-    Order new_order;
-    new_order.orderID = orderID;
-    new_order.productID = productID;
-    new_order.verb = verb;
-    new_order.price = price;
-    new_order.quantity = quantity;
-
-    orders[orderID] = new_order;
-    std::cout << "  Created: " << new_order.to_string() << "\n";
-
-    // Increase to_buy OR to_sell.
-    if (new_order.verb == Order::Verb::BUY)
-    {
-        increase_quantity(new_order, to_buy);
-    }
-    else
-    {
-        increase_quantity(new_order, to_sell);
-    }
-    
-    return true;
-}
-bool OrderBook::del(std::string& orderID)
-{
-    auto it = orders.find(orderID);
-    if (it == orders.end())
-    {
-        return false;
-    }
-
-    // Decrease to_buy OR to_sell.
-    if (it->second.verb == Order::Verb::BUY)
-    {
-        decrease_quantity(it->second, to_buy);
-    }
-    else
-    {
-        decrease_quantity(it->second, to_sell);
-    }
-
-    orders.erase(it);
-
-    std::cout << "  Deleted: " << orderID << "\n";
-    return true;
-}
-bool OrderBook::modify(std::string& orderID, uint32_t price, uint32_t quantity)
-{
-    if (orders.find(orderID) == orders.end())
-    {
-        return false;
-    }
-
-    auto& order = orders[orderID];
-
-    // Decrease to_buy OR to_sell.
-    if (order.verb == Order::Verb::BUY)
-    {
-        decrease_quantity(order, to_buy);
-    }
-    else
-    {
-        decrease_quantity(order, to_sell);
-    }
-
-    // Finally update order.
-    order.price = price;
-    order.quantity = quantity;
-
-    // Increase to_buy OR to_sell.
-    if (order.verb == Order::Verb::BUY)
-    {
-        increase_quantity(order, to_buy);
-    }
-    else
-    {
-        increase_quantity(order, to_sell);
-    }
-
-    std::cout << "  Modified: " << order.to_string() << "\n";
-    return true;
-}
-const Order& OrderBook::get(std::string& orderID)
-{
-    auto it = orders.find(orderID);
-    if (it == orders.end())
-    {
-        throw std::out_of_range{"orderID doesn't exist!"};
-    }
-
-    return it->second;
-}
-bool OrderBook::aggregated_best(std::string& productID, uint32_t& bid_quantity, 
-  uint32_t& bid_price, uint32_t& ask_quantity, uint32_t& ask_price)
-{
-    auto it_buy = to_buy.find(productID);
-    auto it_sell = to_sell.find(productID);
-    if (it_buy == to_buy.end() && it_sell == to_sell.end())
-    {
-        return false;
-    }
-
-    // To buy.
-    if (it_buy == to_buy.end())
-    {
-        bid_quantity = 0;
-        bid_price = 0;
-    }
-    else
-    {
-        auto it_price = it_buy->second.begin();
-        bid_quantity = it_price->second;
-        bid_price = it_price->first;
-    }
-
-    // To sell.
-    if (it_sell == to_sell.end())
-    {
-        ask_quantity = 0;
-        ask_price = 0;
-    }
-    else
-    {
-        auto it_price = it_sell->second.rbegin();
-        ask_quantity = it_price->second;
-        ask_price = it_price->first;
-    }
-
-    return true;
-}
+#include "order_book.hpp"
 
 
 class OrderBookParser
@@ -349,10 +140,6 @@ std::string OrderBookParser::aggregated_best(std::string& parameters)
 int main()
 {
     OrderBookParser order_book;
-
-    // TODO:
-    // - Validazione input;
-    // - Storico dei comandi.
 
     while (true)
     {
