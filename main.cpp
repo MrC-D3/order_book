@@ -58,10 +58,12 @@ class OrderBook
     bool del(std::string& orderID);
     bool modify(std::string& orderID, uint32_t price, uint32_t quantity);
     const Order& get(std::string& orderID);
-    bool aggregated_best(std::string& productID);
+    bool aggregated_best(std::string& productID, uint32_t& bid_quantity, 
+      uint32_t& bid_price, uint32_t& ask_quantity, uint32_t& ask_price);
 
   private:
     std::unordered_map<std::string, Order> orders;
+    // Maps productID => {price, tot_quantity}.
     std::unordered_map<std::string, std::map<uint32_t, uint32_t>> to_buy;
     std::unordered_map<std::string, std::map<uint32_t, uint32_t>> to_sell;
 
@@ -70,6 +72,37 @@ class OrderBook
     void decrease_quantity(Order& order, 
       std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
 };
+
+void OrderBook::increase_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+{
+    // What if keys don't exist?
+    auto& prices = to_update[order.productID];
+    prices[order.price] += order.quantity;
+}
+void OrderBook::decrease_quantity(Order& order, 
+      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
+{
+    auto it_product = to_update.find(order.productID);
+    if (it_product == to_update.end())
+    {
+        throw std::out_of_range{"ProductID doesn't exist."};
+    }
+
+    auto& prices = it_product->second;
+    auto it_price = prices.find(order.price);
+    if (it_price == prices.end())
+    {
+        throw std::out_of_range{"Price doesn't exist."};
+    }
+
+    auto& quantity = it_price->second;
+    quantity -= order.quantity;
+    if (quantity == 0)
+    {
+        prices.erase(it_price);
+    }
+}
 
 bool OrderBook::create(std::string& orderID, std::string& productID, 
   Order::Verb verb, uint32_t price, uint32_t quantity)
@@ -128,7 +161,7 @@ bool OrderBook::modify(std::string& orderID, uint32_t price, uint32_t quantity)
 {
     if (orders.find(orderID) == orders.end())
     {
-        return "ERROR";
+        return false;
     }
 
     auto& order = orders[orderID];
@@ -170,41 +203,43 @@ const Order& OrderBook::get(std::string& orderID)
 
     return it->second;
 }
-
+bool OrderBook::aggregated_best(std::string& productID, uint32_t& bid_quantity, 
+  uint32_t& bid_price, uint32_t& ask_quantity, uint32_t& ask_price)
 {
     auto it_buy = to_buy.find(productID);
     auto it_sell = to_sell.find(productID);
     if (it_buy == to_buy.end() && it_sell == to_sell.end())
     {
-        return "ERROR";
+        return false;
     }
-    std::string to_return{"OK:"};
 
     // To buy.
     if (it_buy == to_buy.end())
     {
-        to_return += "0@0|";
+        bid_quantity = 0;
+        bid_price = 0;
     }
     else
     {
         auto it_price = it_buy->second.begin();
-        to_return += std::to_string(it_price->second) + "@" + 
-          std::to_string(it_price->first) + "|";
+        bid_quantity = it_price->second;
+        bid_price = it_price->first;
     }
 
     // To sell.
     if (it_sell == to_sell.end())
     {
-        to_return += "0@0";
+        ask_quantity = 0;
+        ask_price = 0;
     }
     else
     {
         auto it_price = it_sell->second.rbegin();
-        to_return += std::to_string(it_price->second) + "@" + 
-          std::to_string(it_price->first);
+        ask_quantity = it_price->second;
+        ask_price = it_price->first;
     }
 
-    return to_return;
+    return true;
 }
 
 
@@ -218,28 +253,8 @@ class OrderBookParser
     std::string aggregated_best(std::string& parameters);
 
   private:
-    OrderBook& order_book;
+    OrderBook order_book;
 };
-
-void OrderBook::increase_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
-{
-    // What if keys don't exist?
-    auto& prices = to_update[order.productID];
-    prices[order.price] += order.quantity;
-}
-void OrderBookParser::decrease_quantity(Order& order, 
-      std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update)
-{
-    // What if keys don't exist?
-    auto& prices = to_update[order.productID];
-    prices[order.price] -= order.quantity;
-
-    // Gestione delle quantità zero: Le funzioni decrease_quantity possono 
-    //  portare a quantità negative o zero, ma il codice non rimuove le entry 
-    //  con quantità zero dalle mappe, causando accumulo di dati non validi.
-
-}
 
 std::string OrderBookParser::create(std::string& parameters)
 {
@@ -259,6 +274,9 @@ std::string OrderBookParser::create(std::string& parameters)
 }
 std::string OrderBookParser::del(std::string& parameters)
 {
+    // DELETE OrderId
+    //  E.g.: DELETE 1
+
     std::stringstream ss{parameters};
     // No need to call clear() since it's a new stream.
     std::string orderID;
@@ -268,6 +286,9 @@ std::string OrderBookParser::del(std::string& parameters)
 }
 std::string OrderBookParser::modify(std::string& parameters)
 {
+    // MODIFY OrderId Price Quantity
+    //  E.g.: MODIFY 1 2 2
+
     std::stringstream ss{parameters};
     std::string orderID, price_s, quantity_s;
     std::getline(ss, orderID, ' ');
@@ -277,9 +298,11 @@ std::string OrderBookParser::modify(std::string& parameters)
     return order_book.modify(orderID, stoul(price_s), stoul(quantity_s)) ?
       "OK" : "ERROR";
 }
-
 std::string OrderBookParser::get(std::string& parameters)
 {
+    // GET OrderId
+    //  E.g.: GET 1
+
     std::stringstream ss{parameters};
     std::string orderID;
     std::getline(ss, orderID);
@@ -287,7 +310,7 @@ std::string OrderBookParser::get(std::string& parameters)
     try
     {
         auto order = order_book.get(orderID);
-        return "OK:" + order.to_string();
+        return "OK: " + order.to_string();
     }
     catch(...)
     {
@@ -296,14 +319,30 @@ std::string OrderBookParser::get(std::string& parameters)
 
     return "ERROR";
 }
-
 std::string OrderBookParser::aggregated_best(std::string& parameters)
 {
+    // AGGREGATED_BEST ProductID
+    //  E.g.: AGGREGATED_BEST 1
+
     std::stringstream ss{parameters};
     std::string productID;
     std::getline(ss, productID);
 
+    std::string to_return;
+    uint32_t bid_quantity, bid_price, ask_quantity, ask_price;
+    if (order_book.aggregated_best(productID, bid_quantity, bid_price, 
+      ask_quantity, ask_price))
+    {   // OK0@1|0@0 => ERRORE, ma corretto dopo la CREATE.
+        to_return = "OK: "+std::to_string(bid_quantity)+"@"
+          +std::to_string(bid_price)+"|"+std::to_string(ask_quantity)+"@"
+          +std::to_string(ask_price);  
+    }
+    else
+    {
+        to_return = "ERROR";
+    }
 
+    return to_return;
 }
 
 
@@ -311,7 +350,9 @@ int main()
 {
     OrderBookParser order_book;
 
-    // Mancanza di validazione input.
+    // TODO:
+    // - Validazione input;
+    // - Storico dei comandi.
 
     while (true)
     {
