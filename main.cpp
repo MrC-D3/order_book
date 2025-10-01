@@ -1,144 +1,34 @@
-// Order Book: table of buy orders (bids) and sell orders (asks).
-// Bid: price a buyer is willing to pay for a quantity of product; the best bid 
-//  is the highest price.
-// Ask: price a seller is willing to accept for a quantity of product; the best 
-//  ask is the lowest price.
-// Spread: best_ask - best_bid. Its value can be:
-//  > 0: represents the implicit liquidity/inefficiency cost of entering or 
-//       exiting the market;
-//  == 0: perfectly tight spread, when the market is balanced;
-//  < 0: (crossed book) cannot really exist, except for a brief moment before 
-//       the matching engine executes the trade.
-// The spread is one indicator of liquidity: a tight spread means low cost of 
-//  trading and high competition. But spread alone is not enough. Another key 
-//  factor is Depth: large quantities available at each price level mean high 
-//  depth, and therefore a more liquid market.
-// In terms of liquidity, an order can be:
-// - liquidity provider: if it does not cross the book, it stays in the book and 
-//   adds available volume, increasing liquidity;
-// - liquidity taker: if it is marketable, i.e. it crosses the book, it triggers 
-//   a match and consumes liquidity.
-
 // TODO:
 // - Validazione input;
 // - Storico dei comandi;
-// - Case insensitive.
+// - Case insensitive;
 // - authentication/authorization
 
+// C++ standard
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
 #include <string>
 #include <map>
-
+// POSIX
+#include <sys/socket.h> // For APIs like socket(), bind(), etc.
+#include <netinet/in.h> // For the socket address struct like sockaddr_in.
+#include <unistd.h> // For close(), read(), write().
+// Custom
 #include "order_book.hpp"
+#include "order_book_parser.hpp"
 
 
-class OrderBookParser
+void network_mod();
+
+int main(int argc, char** argv)
 {
-  public:
-    std::string create(std::string& parameters);
-    std::string del(std::string& parameters);
-    std::string modify(std::string& parameters);
-    std::string get(std::string& parameters);
-    std::string aggregated_best(std::string& parameters);
-
-  private:
-    OrderBook order_book;
-};
-
-std::string OrderBookParser::create(std::string& parameters)
-{
-    // CREATE OrderId ProductId Verb Price Quantity
-    //  E.g.: CREATE 1 1 BUY 1 1
-    std::stringstream ss{parameters};
-    std::string orderID, productID, verb_s, price_s, quantity_s;
-    std::getline(ss, orderID, ' ');
-    std::getline(ss, productID, ' ');
-    std::getline(ss, verb_s, ' ');
-    std::getline(ss, price_s, ' ');
-    std::getline(ss, quantity_s);
-
-    auto verb = verb_s == "BUY" ? Order::Verb::BUY : Order::Verb::SELL;
-    return order_book.create(orderID, productID, verb, std::stoul(price_s), 
-      std::stoul(quantity_s)) ? "OK" : "ERROR";
-}
-std::string OrderBookParser::del(std::string& parameters)
-{
-    // DELETE OrderId
-    //  E.g.: DELETE 1
-
-    std::stringstream ss{parameters};
-    // No need to call clear() since it's a new stream.
-    std::string orderID;
-    std::getline(ss, orderID);
-
-    return order_book.del(orderID) ? "OK" : "ERROR";
-}
-std::string OrderBookParser::modify(std::string& parameters)
-{
-    // MODIFY OrderId Price Quantity
-    //  E.g.: MODIFY 1 2 2
-
-    std::stringstream ss{parameters};
-    std::string orderID, price_s, quantity_s;
-    std::getline(ss, orderID, ' ');
-    std::getline(ss, price_s, ' ');
-    std::getline(ss, quantity_s);
-
-    return order_book.modify(orderID, stoul(price_s), stoul(quantity_s)) ?
-      "OK" : "ERROR";
-}
-std::string OrderBookParser::get(std::string& parameters)
-{
-    // GET OrderId
-    //  E.g.: GET 1
-
-    std::stringstream ss{parameters};
-    std::string orderID;
-    std::getline(ss, orderID);
-
-    try
+    if (argc == 1)
     {
-        auto order = order_book.get(orderID);
-        return "OK: " + order.to_string();
-    }
-    catch(...)
-    {
-
+        network_mod();
+        return 0;
     }
 
-    return "ERROR";
-}
-std::string OrderBookParser::aggregated_best(std::string& parameters)
-{
-    // AGGREGATED_BEST ProductID
-    //  E.g.: AGGREGATED_BEST 1
-
-    std::stringstream ss{parameters};
-    std::string productID;
-    std::getline(ss, productID);
-
-    std::string to_return;
-    uint32_t bid_quantity, bid_price, ask_quantity, ask_price;
-    if (order_book.aggregated_best(productID, bid_quantity, bid_price, 
-      ask_quantity, ask_price))
-    {   // OK0@1|0@0 => ERRORE, ma corretto dopo la CREATE.
-        to_return = "OK: "+std::to_string(bid_quantity)+"@"
-          +std::to_string(bid_price)+"|"+std::to_string(ask_quantity)+"@"
-          +std::to_string(ask_price);  
-    }
-    else
-    {
-        to_return = "ERROR";
-    }
-
-    return to_return;
-}
-
-
-int main()
-{
     OrderBookParser order_book;
 
     while (true)
@@ -201,8 +91,56 @@ int main()
         else if (command == "QUIT")
         {
             break;
-        }   
+        }
     }
 
     return 0;
+}
+
+void network_mod(int client_fd)
+{
+    // Parameters:
+    // 1. the domain of addresses, like IPv4, IPv6, local sockets;
+    // 2. the transport layer, like TCP, UDP or raw;
+    // 3. the protocol, like TCP/IP, UDP/IP or let-the-system-decide (0).
+    // Paramer #3 allows custom protocol still based on known IP/TCP/UDP.
+    auto socket_fd = socket(AF_INET, SOCK_STREAM, 0); // IPv4/TCP.
+    // TODO: Check the File Descriptor is not -1.
+
+    // Parameters:
+    // 1. the socker File Descriptor;
+    // 2. the socket address struct;
+    // 3. the length of the socket address struct.
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY; // Any address.
+    address.sin_port = htons(8080); // From Machine to Network byte order.
+    auto result_bind = bind(socket_fd, (struct sockaddr*) &address, sizeof(address));
+    // TODO: check the bind didn't fail.
+
+    // Parameters:
+    // 1. the socket to listen on;
+    // 2. the backlog i.e. queue size of pending clients (tipically 5-128).
+    constexpr int backlog = 10;
+    auto result_listen = listen(socket_fd, backlog);
+
+    struct sockaddr_in client_address;
+    socklen_t client_address_size = sizeof(client_address);
+    while (true)
+    {
+        auto client_fd = accept(socket_fd, (struct sockaddr*) &client_address, 
+          &client_address_size);
+        // TODO: Check client_fd not <0.
+
+        // Handle client 
+        //read()/recv() - Read data from client
+        //write()/send() - Send data to client
+
+        // TODO:
+        // - can I make it trasparent if the I/O happens locally or via socket?
+
+        close(client_fd);
+    }
+
+    close(socket_fd);
 }
