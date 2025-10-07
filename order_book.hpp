@@ -1,6 +1,26 @@
-// Notes:
-// _ Use const in read-only parameters for better readability, compiler 
-//  optimizations and potentially wrong usage.
+// Order Book: table of buy orders (bids) and sell orders (asks).
+// Bid: price a buyer is willing to pay for a quantity of product; the best bid 
+//  is the highest price.
+// Ask: price a seller is willing to accept for a quantity of product; the best 
+//  ask is the lowest price.
+// Spread: best_ask - best_bid. Its value can be:
+//  > 0: represents the implicit liquidity/inefficiency cost of entering or 
+//       exiting the market;
+//  == 0: perfectly tight spread, when the market is balanced;
+//  < 0: (crossed book) cannot really exist, except for a brief moment before 
+//       the matching engine executes the trade.
+// The spread is one indicator of liquidity: a tight spread means low cost of 
+//  trading and high competition. But spread alone is not enough. Another key 
+//  factor is Depth: large quantities available at each price level mean high 
+//  depth, and therefore a more liquid market.
+// In terms of liquidity, an order can be:
+// - liquidity provider: if it does not cross the book, it stays in the book and 
+//   adds available volume, increasing liquidity;
+// - liquidity taker: if it is marketable, i.e. it crosses the book, it triggers 
+//   a match and consumes liquidity.
+
+// TODOs:
+// - input validation (e.g. min/max price/quantity/productID_length/ecc.);
 
 #pragma once
 
@@ -10,6 +30,8 @@
 #include <stdexcept>
 #include <limits> // For checking overflow.
 #include <sstream> // To build string efficiently, instead of concatenation.
+#include <shared_mutex> // For shared_mutex.
+
 
 struct Order
 {
@@ -37,7 +59,6 @@ struct Order
     }
 };
 
-
 class OrderBook
 {
   public:
@@ -54,9 +75,11 @@ class OrderBook
   private:
     std::unordered_map<std::string, Order> orders;
     // Maps productID => {price, tot_quantity}.
-    // The key value is const by default in map.
+    //  The key value is const by default in map.
     std::unordered_map<std::string, std::map<uint32_t, uint32_t>> bids;
     std::unordered_map<std::string, std::map<uint32_t, uint32_t>> asks;
+    // Mutex made mutable, so it can be used in read-only methods.
+    mutable std::shared_mutex m_shared_mutex; 
 
     void increase_quantity(const Order& order, 
       std::unordered_map<std::string, std::map<uint32_t, uint32_t>>& to_update);
@@ -104,7 +127,7 @@ bool OrderBook::create(const std::string& orderID, const std::string& productID,
   const Order::Verb verb, const uint32_t price, const uint32_t quantity)
 {
     // TODO:
-    // _ limits the number of orders.
+    // - limits the number of orders.
 
     if (orders.find(orderID) != orders.end())
     {
@@ -249,3 +272,114 @@ bool OrderBook::aggregated_best(const std::string& productID, uint32_t& bid_quan
 
     return true;
 }
+
+
+
+/*
+** LOGGING.
+*/
+#include <stdexcept>
+#include <iostream> // or proper logging framework
+
+class OrderBookException : public std::runtime_error {
+public:
+    OrderBookException(const std::string& msg) : std::runtime_error(msg) {}
+};
+
+class OrderBook {
+private:
+    void log_operation(const std::string& operation, const std::string& orderID, bool success) {
+        // In production: use spdlog, glog, or similar
+        std::cout << "[" << get_timestamp() << "] " << operation 
+                  << " orderID=" << orderID << " success=" << success << std::endl;
+    }
+
+    std::string get_timestamp() const {
+        // Return current timestamp
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        return std::ctime(&time_t);
+    }
+};
+
+/*
+** STATISTICS & METRICS
+*/
+struct OrderBookStats {
+    size_t total_orders;
+    size_t buy_orders;
+    size_t sell_orders;
+    uint32_t highest_bid;
+    uint32_t lowest_ask;
+    uint32_t spread;
+    uint64_t total_bid_volume;
+    uint64_t total_ask_volume;
+};
+
+class OrderBook {
+public:
+    OrderBookStats get_statistics(const std::string& productID) const;
+    std::vector<std::pair<uint32_t, uint32_t>> get_market_depth(
+        const std::string& productID, size_t levels = 10) const;
+};
+
+#include <chrono>
+
+class OrderBook {
+private:
+    struct Metrics {
+        std::atomic<uint64_t> total_orders{0};
+        std::atomic<uint64_t> create_operations{0};
+        std::atomic<uint64_t> delete_operations{0};
+        std::atomic<uint64_t> modify_operations{0};
+        std::atomic<uint64_t> failed_operations{0};
+    } metrics_;
+
+public:
+    const Metrics& get_metrics() const { return metrics_; }
+
+    bool create(const std::string& orderID, const std::string& productID, 
+                Order::Verb verb, uint32_t price, uint32_t quantity) {
+        auto start = std::chrono::high_resolution_clock::now();
+
+        bool result = create_impl(orderID, productID, verb, price, quantity);
+
+        metrics_.create_operations++;
+        if (!result) metrics_.failed_operations++;
+
+        auto duration = std::chrono::high_resolution_clock::now() - start;
+        log_performance("create", duration);
+
+        return result;
+    }
+};
+
+/*
+** Market Data Interface.
+*/
+class MarketDataListener {
+public:
+    virtual ~MarketDataListener() = default;
+    virtual void on_order_added(const Order& order) = 0;
+    virtual void on_order_removed(const std::string& orderID) = 0;
+    virtual void on_order_modified(const Order& old_order, const Order& new_order) = 0;
+    virtual void on_best_bid_ask_changed(const std::string& productID, 
+                                       uint32_t bid_price, uint32_t ask_price) = 0;
+};
+
+class OrderBook {
+private:
+    std::vector<std::shared_ptr<MarketDataListener>> listeners_;
+
+public:
+    void add_listener(std::shared_ptr<MarketDataListener> listener) {
+        listeners_.push_back(listener);
+    }
+
+private:
+    void notify_order_added(const Order& order) {
+        for (auto& listener : listeners_) {
+            listener->on_order_added(order);
+        }
+    }
+};
